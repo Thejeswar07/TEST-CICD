@@ -1,70 +1,46 @@
-name: CI/CD to ECR and EC2
+- name: Deploy to EC2
+  uses: appleboy/ssh-action@v0.1.10
+  with:
+    host: ${{ secrets.EC2_HOST }}
+    username: ubuntu
+    key: ${{ secrets.EC2_KEY }}
+    script: |
+      # Set variables
+      AWS_REGION=${{ env.AWS_REGION }}
+      ECR_REPOSITORY=${{ env.ECR_REPOSITORY }}
+      IMAGE_TAG=${{ env.IMAGE_TAG }}
+      ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
 
-on:
-  push:
-    branches:
-      - main
+      # Install AWS CLI if not installed
+      if ! command -v aws &> /dev/null
+      then
+          echo "Installing AWS CLI..."
+          sudo apt update -y
+          sudo apt install awscli -y
+      fi
 
-env:
-  AWS_REGION: us-east-2
-  ECR_REPOSITORY: helloapp
-  IMAGE_TAG: latest
+      # Install Docker if not installed
+      if ! command -v docker &> /dev/null
+      then
+          echo "Installing Docker..."
+          sudo apt install docker.io -y
+          sudo systemctl start docker
+          sudo usermod -aG docker ubuntu
+      fi
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
+      # Login to ECR
+      aws ecr get-login-password --region $AWS_REGION | \
+      docker login --username AWS --password-stdin \
+      $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      # Stop old container
+      docker stop hello-container || true
+      docker rm hello-container || true
 
-      # Configure AWS credentials
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+      # Pull latest image
+      docker pull \
+      $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
 
-      # Login to Amazon ECR
-      - name: Login to ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v1
-
-      # Build Docker image
-      - name: Build Docker image
-        run: |
-          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
-
-      # Tag Docker image
-      - name: Tag image
-        run: |
-          docker tag $ECR_REPOSITORY:$IMAGE_TAG \
-          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
-
-      # Push image to ECR
-      - name: Push image to ECR
-        run: |
-          docker push \
-          ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
-
-      # Deploy to EC2
-      - name: Deploy to EC2
-        uses: appleboy/ssh-action@v0.1.10
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key: ${{ secrets.EC2_KEY }}
-          script: |
-            aws ecr get-login-password --region $AWS_REGION | \
-            docker login --username AWS --password-stdin \
-            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com
-
-            docker stop hello-container || true
-            docker rm hello-container || true
-
-            docker pull \
-            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
-
-            docker run -d -p 80:80 --name hello-container \
-            ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+      # Run container
+      docker run -d -p 80:80 --name hello-container \
+      $ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
